@@ -1,0 +1,19 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+.venv/
+venv/
+.DS_Store
+
+# Local human-review database (regenerated at runtime)
+outputs/human_reviews.sqlite
+
+# Internal sidecar produced by data generation (regenerated)
+data/_series_sidecar.json
+data/features.csv

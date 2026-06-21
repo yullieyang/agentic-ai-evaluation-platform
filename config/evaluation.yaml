@@ -1,0 +1,43 @@
+# Thresholds for deterministic QA checks and settings for evaluation/calibration.
+# Deterministic checks are transparent baselines, not ground truth.
+
+deterministic_checks:
+  abs_percent_change:
+    threshold: 0.20          # |percent_change| above this flags
+    high_threshold: 0.40     # above this -> high severity
+  zscore:
+    threshold: 3.0
+    high_threshold: 4.0
+  robust_zscore:
+    threshold: 3.5
+    high_threshold: 5.0
+  missing_rate:
+    threshold: 0.05
+    high_threshold: 0.10
+  small_sample:
+    threshold: 100           # sample_size below this is unstable
+    critical: 40
+  consecutive_drift:
+    min_consecutive: 3       # consecutive same-direction quarters
+  volatility_increase:
+    ratio_threshold: 2.0     # rolling_std / historical_std above this
+  cross_segment_inconsistency:
+    deviation_threshold: 2.5 # cross-segment z deviation
+  expected_direction:
+    enabled: true            # contradiction of expected direction
+  cross_metric_contradiction:
+    enabled: true
+  seasonal_warning:
+    enabled: true
+  metric_definition_change:
+    enabled: true
+
+calibration:
+  n_bins: 10
+  overconfidence_margin: 0.10   # confidence exceeds accuracy by this -> overconfident
+
+evaluation:
+  positive_label: true           # anomaly_detected == True is the positive class
+  bootstrap_iterations: 2000
+  bootstrap_ci: 0.95
+  random_seed: 7

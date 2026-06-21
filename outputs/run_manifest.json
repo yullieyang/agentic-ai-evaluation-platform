@@ -1,0 +1,32 @@
+{
+  "grids": [
+    "mock_main",
+    "mock_ablation"
+  ],
+  "timestamp": "2026-06-21T00:23:05.175188Z",
+  "seed": 13,
+  "n_conditions": 20,
+  "n_cases": 600,
+  "dataset_version": "synthetic-v1",
+  "mock_mode": true,
+  "ground_truth_excluded_from_prompts": true,
+  "ground_truth_fields": [
+    "ground_truth_anomaly",
+    "ground_truth_severity",
+    "ground_truth_anomaly_type",
+    "ground_truth_reason"
+  ],
+  "environment": {
+    "git_commit": null,
+    "dependencies": {
+      "python": "3.11.5",
+      "pandas": "2.0.3",
+      "numpy": "1.24.3",
+      "scipy": "1.11.1",
+      "sklearn": "1.3.0",
+      "pydantic": "1.10.8",
+      "plotly": "5.9.0"
+    },
+    "platform": "darwin"
+  }
+}

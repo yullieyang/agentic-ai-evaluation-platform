@@ -1,0 +1,62 @@
+{
+  "normal_variation": {
+    "generator": "_scn_normal",
+    "description": ""
+  },
+  "sudden_level_shift": {
+    "generator": "_scn_level_shift",
+    "description": ""
+  },
+  "gradual_drift": {
+    "generator": "_scn_drift",
+    "description": ""
+  },
+  "seasonal_movement": {
+    "generator": "_scn_seasonal",
+    "description": ""
+  },
+  "missing_data_spike": {
+    "generator": "_scn_missing_spike",
+    "description": ""
+  },
+  "small_sample_instability": {
+    "generator": "_scn_small_sample",
+    "description": ""
+  },
+  "segment_specific_anomaly": {
+    "generator": "_scn_segment",
+    "description": ""
+  },
+  "contradictory_metric_movement": {
+    "generator": "_scn_contradiction",
+    "description": ""
+  },
+  "macro_shock": {
+    "generator": "_scn_macro",
+    "description": ""
+  },
+  "false_positive_trap": {
+    "generator": "_scn_fp_trap",
+    "description": ""
+  },
+  "false_negative_trap": {
+    "generator": "_scn_fn_trap",
+    "description": ""
+  },
+  "incomplete_evidence": {
+    "generator": "_scn_incomplete",
+    "description": ""
+  },
+  "noisy_data": {
+    "generator": "_scn_noisy",
+    "description": ""
+  },
+  "recovery_after_shock": {
+    "generator": "_scn_recovery",
+    "description": ""
+  },
+  "metric_definition_change": {
+    "generator": "_scn_definition_change",
+    "description": ""
+  }
+}

@@ -1,0 +1,54 @@
+# Experiment grid definitions. Each named experiment expands into one or more
+# conditions over the listed axes. The default experiments run entirely in mock
+# mode so the repository is fully runnable without any API key.
+
+dataset_version: "synthetic-v1"
+default_seed: 13
+
+# A small grid suitable for offline mock-mode execution.
+grids:
+  mock_main:
+    description: >
+      Primary mock-mode comparison across the four prompt variants, with and
+      without deterministic-evidence context, and with the reviewer agent on/off.
+    provider: ["mock"]
+    model: ["mock-deterministic"]
+    prompt_version:
+      - "prompt_a_zero_shot"
+      - "prompt_b_few_shot"
+      - "prompt_c_evidence_constrained"
+      - "prompt_d_conservative"
+    temperature: [0.0]
+    include_deterministic_evidence: [true, false]
+    reviewer_enabled: [true, false]
+    evidence_completeness: ["complete"]
+    scenario_filter: ["all"]
+    mock_error_rate: [0.12]      # base disagreement rate of the mock agent
+
+  mock_ablation:
+    description: >
+      Ablations on the strongest mock condition: remove chart summaries, remove
+      few-shot examples, introduce incomplete and contradictory evidence.
+    provider: ["mock"]
+    model: ["mock-deterministic"]
+    prompt_version: ["prompt_c_evidence_constrained"]
+    temperature: [0.0]
+    include_deterministic_evidence: [true]
+    reviewer_enabled: [false]
+    evidence_completeness: ["complete", "incomplete"]
+    scenario_filter: ["all", "adversarial"]
+    mock_error_rate: [0.12]
+
+# Example live-model grid (NOT run by default; requires API keys). Provided for
+# documentation and reproducibility only.
+live_example:
+  mock_to_live_reference:
+    description: "Reference live grid; execute manually with provider credentials."
+    provider: ["anthropic"]
+    model: ["claude-opus-4-8"]
+    prompt_version: ["prompt_c_evidence_constrained"]
+    temperature: [0.0]
+    include_deterministic_evidence: [true, false]
+    reviewer_enabled: [true, false]
+    evidence_completeness: ["complete"]
+    scenario_filter: ["all"]
