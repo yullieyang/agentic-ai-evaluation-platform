@@ -93,11 +93,11 @@ flowchart TD
     DG[Synthetic data generation] --> FE[Feature engineering]
     DG --> CS[Chart-derived summaries]
     FE --> DC[Deterministic QA checks]
-    FE --> EV[Evidence assembly\n(ground-truth-free)]
+    FE --> EV["Evidence assembly<br/>(ground-truth-free)"]
     CS --> EV
     DC --> EV
     DC --> BL[Rule baseline decision]
-    EV --> AG[QA agent\n(provider + retry + schema validation)]
+    EV --> AG["QA agent<br/>(provider + retry + schema validation)"]
     AG --> RV[Optional reviewer agent]
     AG --> EVAL[Evaluation vs ground truth]
     RV --> EVAL
