@@ -430,15 +430,45 @@ incur API cost and are never executed by default.
 - `outputs/run_manifest.json` — provenance (git commit, seed, dependencies).
 
 **Dashboard screenshots** (`screenshots/`, captured from a real local run of
-this app in mock mode):
+this app in mock mode — the mock-provider disclosure banner is visible in
+every image below, cropped from the full screenshots in `screenshots/`,
+never redrawn or fabricated):
 
-| Review Queue | Case Review diagnostics |
-|---|---|
-| ![Review Queue](screenshots/review-queue.png) | ![Case Review](screenshots/case-review.png) |
+![Case Review: evidence available to the agent, the agent's structured finding, the independent reviewer's output, deterministic baseline and validation, and the human-review escalation decision, all for one case](screenshots/hero/case-review-workflow.png)
 
-| Experiment Comparison | Methodology & Limitations |
-|---|---|
-| ![Experiment Comparison](screenshots/experiment-comparison.png) | ![Methodology & Limitations](screenshots/methodology-limitations.png) |
+Case Review — the full per-case workflow in one view: the evidence the
+agent had access to, its structured finding, the independent reviewer
+agent's check, deterministic validation, and the resulting escalation
+decision. This is what a reviewer looks at to decide whether to trust one
+case's result.
+
+![Review Queue: 600 cases with case ID, alert type, predicted severity, confidence, reviewer decision, and escalation reason columns](screenshots/hero/review-queue-crop.png)
+
+Review Queue — every case in the run (600 here), filterable to just what
+needs human review. Confirms this is a working multi-case application, not
+a single mocked screen.
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+![Experiment Comparison: precision by prompt version bar chart on a full 0-to-0.6 axis, with a caption stating what the single-shot vs. agentic comparison does and doesn't show](screenshots/hero/experiment-comparison-crop.png)
+
+Experiment Comparison — precision by prompt version, with the mock-vs-live
+caveat stated directly beneath the chart, not in a footnote.
+
+</td>
+<td width="50%" valign="top">
+
+![Methodology and Limitations: mock vs live stated plainly, and what the single-shot vs agentic comparison does and doesn't show](screenshots/hero/methodology-limitations-crop.png)
+
+Methodology & Limitations — the mock-vs-live distinction and what the
+architecture comparison does and doesn't demonstrate, stated on the page
+itself, not only in this README.
+
+</td>
+</tr>
+</table>
 
 ## 20. Tests
 
