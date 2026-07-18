@@ -28,8 +28,9 @@ from typing import Any, Callable
 import numpy as np
 import pandas as pd
 
+from .evidence_store import alert_type_for, release_version_for
 from .schemas import DIFFICULTIES, SCENARIO_TYPES
-from .utils import DATA_DIR, get_logger, set_seed, write_json
+from .utils import DATA_DIR, get_logger, load_config, set_seed, write_json
 
 LOGGER = get_logger("data_generation")
 
@@ -295,6 +296,23 @@ def _available_evidence(outcome: ScenarioOutcome) -> str:
     return ",".join(parts)
 
 
+def _expected_escalation(outcome: ScenarioOutcome, difficulty: str) -> bool:
+    """Documented, deterministic escalation-expectation rule, fixed at generation
+    time from ground-truth fields already decided by the scenario generator —
+    never adjusted after seeing any model output.
+
+    A case is expected to escalate to human review when the ground truth is
+    non-trivial to act on: medium/high severity, missing or contradictory
+    evidence, or an ambiguous/adversarial difficulty tier.
+    """
+    return bool(
+        outcome.ground_truth_severity in ("medium", "high")
+        or outcome.missing_evidence_flag
+        or outcome.contradictory_evidence
+        or difficulty in ("ambiguous", "adversarial")
+    )
+
+
 def generate_dataset(n_cases: int = 600, seed: int = 13) -> tuple[pd.DataFrame, dict, dict]:
     """Generate the synthetic monitoring dataset.
 
@@ -304,6 +322,7 @@ def generate_dataset(n_cases: int = 600, seed: int = 13) -> tuple[pd.DataFrame, 
     rng = set_seed(seed)
     quarters = _quarters()
     rows: list[dict[str, Any]] = []
+    zscore_threshold = float(load_config("evaluation.yaml")["deterministic_checks"]["zscore"]["threshold"])
 
     # Round-robin scenario assignment guarantees coverage of all 15 scenarios.
     for idx in range(n_cases):
@@ -330,6 +349,7 @@ def generate_dataset(n_cases: int = 600, seed: int = 13) -> tuple[pd.DataFrame, 
         # Quarter index: place the case at the final modelled quarter.
         quarter = quarters[-1]
 
+        row_partial = {"quarter": quarter, "scenario_type": scenario}
         rows.append(
             {
                 "case_id": f"case_{idx:04d}",
@@ -337,6 +357,9 @@ def generate_dataset(n_cases: int = 600, seed: int = 13) -> tuple[pd.DataFrame, 
                 "quarter": quarter,
                 "segment": segment,
                 "metric_name": metric_name,
+                "alert_type": alert_type_for(scenario),
+                "release_version": release_version_for(row_partial),
+                "threshold": zscore_threshold,
                 "current_value": round(current, 6),
                 "previous_value": round(previous, 6),
                 "historical_mean": round(hist_mean, 6),
@@ -354,6 +377,7 @@ def generate_dataset(n_cases: int = 600, seed: int = 13) -> tuple[pd.DataFrame, 
                 "ground_truth_severity": outcome.ground_truth_severity,
                 "ground_truth_anomaly_type": outcome.ground_truth_anomaly_type,
                 "ground_truth_reason": outcome.ground_truth_reason,
+                "ground_truth_expected_escalation": _expected_escalation(outcome, str(diff)),
                 "available_evidence": _available_evidence(outcome),
                 "contradictory_evidence": bool(outcome.contradictory_evidence),
                 "missing_evidence_flag": bool(outcome.missing_evidence_flag),

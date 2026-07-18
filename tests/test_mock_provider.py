@@ -75,3 +75,40 @@ def test_error_rate_changes_behaviour_distribution():
 
 def test_factory_returns_mock():
     assert isinstance(get_provider("mock"), MockProvider)
+
+
+def test_mock_cited_evidence_ids_exist_in_case_catalog():
+    """End-to-end: run a real case through build_evidence + the mock provider,
+    and confirm every evidence_id the mock cites is actually present in that
+    case's evidence_catalog (not a dangling/synthetic-looking reference)."""
+    from src.agent import build_evidence
+    from src.chart_summaries import build_chart_summary
+    from src.data_generation import generate_dataset
+    from src.deterministic_checks import baseline_decision, run_checks
+    from src.feature_engineering import build_features
+
+    df, _, _ = generate_dataset(n_cases=40, seed=17)
+    feats = build_features(df)
+    checked_any_citation = False
+    for row in df.to_dict("records"):
+        cid = row["case_id"]
+        f = feats.loc[cid].to_dict()
+        checks = run_checks(row, f, row["_series"])
+        base_anom, base_sev = baseline_decision(checks)
+        chart = build_chart_summary(row["_series"], row, f)
+        prompt_ev, mock_ev = build_evidence(
+            row=row, features=f, checks=checks, chart_summary=chart,
+            include_deterministic_evidence=True, baseline_anomaly=base_anom,
+            baseline_severity=base_sev, evidence_completeness="complete")
+        catalog_ids = {item["evidence_id"] for item in prompt_ev["evidence_catalog"]}
+        provider = MockProvider(error_rate=0.1)
+        ctx = {"case_id": cid, "prompt_version": "prompt_c_evidence_constrained",
+               "include_deterministic_evidence": True, "reviewer_enabled": False,
+               "evidence_completeness": "complete", "attempt": 0,
+               "profile": {}, "evidence": mock_ev}
+        resp = provider.complete("s", "u", model="mock-deterministic", context=ctx)
+        cited = resp.parsed.get("evidence_ids", []) if resp.parsed else []
+        if cited:
+            checked_any_citation = True
+            assert set(cited) <= catalog_ids, f"dangling evidence_id citation for {cid}: {cited} not subset of {catalog_ids}"
+    assert checked_any_citation  # sanity: at least some cases actually cited evidence

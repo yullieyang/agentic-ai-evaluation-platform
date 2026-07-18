@@ -50,6 +50,36 @@ def test_evaluate_records_contains_core_keys():
                 "schema_compliance_rate", "abstention_rate", "unsupported_claim_rate"]:
         assert key in m
     assert m["accuracy"] == 1.0
+    # Records without the new agentic/validation/escalation fields simply
+    # don't get those aggregate keys — old-style records stay unaffected.
+    assert "avg_tool_calls" not in m
+    assert "escalation_rate" not in m
+
+
+def test_evaluate_records_includes_agentic_and_escalation_aggregates_when_present():
+    records = [
+        {"gt_anomaly": True, "gt_severity": "high", "pred_anomaly": True, "pred_severity": "high",
+         "abstained": False, "confidence": 0.9, "schema_valid": True, "gt_anomaly_type": "x",
+         "pred_anomaly_type": "x", "n_supporting_evidence": 1, "n_followup": 1,
+         "has_unsupported_claim": False, "latency_s": 0.1, "input_tokens": 100, "output_tokens": 50,
+         "estimated_cost": 0.0, "total_retries": 0, "mock_unsupported_injected": False,
+         "tool_calls": 4, "evidence_citation_correct": True,
+         "deterministic_validation_passed": True, "escalate": True, "gt_expected_escalation": True},
+        {"gt_anomaly": False, "gt_severity": "none", "pred_anomaly": False, "pred_severity": "none",
+         "abstained": False, "confidence": 0.6, "schema_valid": True, "gt_anomaly_type": "none",
+         "pred_anomaly_type": "none", "n_supporting_evidence": 0, "n_followup": 0,
+         "has_unsupported_claim": False, "latency_s": 0.1, "input_tokens": 100, "output_tokens": 50,
+         "estimated_cost": 0.0, "total_retries": 0, "mock_unsupported_injected": False,
+         "tool_calls": 2, "evidence_citation_correct": False,
+         "deterministic_validation_passed": False, "escalate": False, "gt_expected_escalation": False},
+    ]
+    m = evaluate_records(records)
+    assert m["avg_tool_calls"] == 3.0
+    assert m["evidence_citation_accuracy"] == 0.5
+    assert m["deterministic_validation_pass_rate"] == 0.5
+    assert m["escalation_rate"] == 0.5
+    assert m["escalation_precision"] == 1.0
+    assert m["escalation_recall"] == 1.0
 
 
 def test_bootstrap_ci_brackets_point():

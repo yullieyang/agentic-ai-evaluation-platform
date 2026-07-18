@@ -97,6 +97,80 @@ def test_agent_retry_recovers_from_malformed(small_bundle):
     assert result.total_retries >= 1
 
 
+def test_run_condition_agentic_tools_architecture(small_bundle):
+    clean, bundle = small_bundle
+    condition = {"provider": "mock", "model": "mock-deterministic",
+                 "prompt_version": "prompt_c_evidence_constrained", "temperature": 0.0,
+                 "architecture": "agentic_tools",
+                 "include_deterministic_evidence": True, "reviewer_enabled": True,
+                 "evidence_completeness": "complete", "scenario_filter": "all",
+                 "mock_error_rate": 0.1}
+    prompts_cfg = load_config("prompts.yaml")
+    records, summary = run_condition(condition, clean, bundle, "test_agentic__000", prompts_cfg)
+    assert len(records) == len(clean)
+    assert all(r["architecture"] == "agentic_tools" for r in records)
+    assert all(r["tool_calls"] > 0 for r in records)  # every case actually called tools
+    assert "avg_tool_calls" in summary["pre_review"]
+    assert summary["pre_review"]["avg_tool_calls"] > 0
+
+
+def test_single_shot_architecture_reports_zero_tool_calls(small_bundle):
+    clean, bundle = small_bundle
+    condition = {"provider": "mock", "model": "mock-deterministic",
+                 "prompt_version": "prompt_c_evidence_constrained", "temperature": 0.0,
+                 "architecture": "single_shot",
+                 "include_deterministic_evidence": True, "reviewer_enabled": False,
+                 "evidence_completeness": "complete", "scenario_filter": "all",
+                 "mock_error_rate": 0.1}
+    prompts_cfg = load_config("prompts.yaml")
+    records, summary = run_condition(condition, clean, bundle, "test_single__000", prompts_cfg)
+    assert all(r["tool_calls"] == 0 for r in records)
+
+
+def test_deterministic_validation_and_escalation_columns_present(small_bundle):
+    clean, bundle = small_bundle
+    condition = {"provider": "mock", "model": "mock-deterministic",
+                 "prompt_version": "prompt_c_evidence_constrained", "temperature": 0.0,
+                 "architecture": "single_shot",
+                 "include_deterministic_evidence": True, "reviewer_enabled": True,
+                 "evidence_completeness": "complete", "scenario_filter": "all",
+                 "mock_error_rate": 0.15}
+    prompts_cfg = load_config("prompts.yaml")
+    records, summary = run_condition(condition, clean, bundle, "test_valid__000", prompts_cfg)
+    for r in records:
+        assert "deterministic_validation_passed" in r
+        assert "escalate" in r
+        assert "evidence_citation_correct" in r
+        assert isinstance(r["escalation_reasons"], str)
+
+
+def test_summary_to_csv_row_serializable_and_round_trips(small_bundle, tmp_path):
+    import pandas as pd
+    from src.experiment_runner import _summary_to_csv_row
+
+    clean, bundle = small_bundle
+    condition = {"provider": "mock", "model": "mock-deterministic",
+                 "prompt_version": "prompt_c_evidence_constrained", "temperature": 0.0,
+                 "architecture": "agentic_tools",
+                 "include_deterministic_evidence": True, "reviewer_enabled": True,
+                 "evidence_completeness": "complete", "scenario_filter": "all",
+                 "mock_error_rate": 0.1}
+    prompts_cfg = load_config("prompts.yaml")
+    records, summary = run_condition(condition, clean, bundle, "test_csv__000", prompts_cfg)
+    row = _summary_to_csv_row(summary, "test_csv", "2026-01-01T00:00:00Z", 42)
+
+    # Every value must be a plain JSON-serializable scalar (no objects/NaN-only
+    # columns silently smuggled through) so pd.DataFrame(...).to_csv round-trips.
+    csv_path = tmp_path / "experiment_row.csv"
+    df = pd.DataFrame([row])
+    df.to_csv(csv_path, index=False)
+    reloaded = pd.read_csv(csv_path)
+    assert reloaded.iloc[0]["experiment_id"] == "test_csv__000"
+    assert reloaded.iloc[0]["architecture"] == "agentic_tools"
+    assert "pre_avg_tool_calls" in reloaded.columns
+    assert float(reloaded.iloc[0]["pre_avg_tool_calls"]) > 0
+
+
 def test_config_loading():
     cfg = load_config("experiments.yaml")
     assert "grids" in cfg and "mock_main" in cfg["grids"]

@@ -100,11 +100,23 @@ class AgentFinding(BaseModel):
     severity: Severity
     anomaly_type: str
     summary: str
-    observations: List[str] = Field(default_factory=list)
+    observations: List[str] = Field(
+        default_factory=list,
+        description="Observed facts only — what the numbers show. Never a cause.")
     supporting_evidence: List[EvidenceItem] = Field(default_factory=list)
+    evidence_ids: List[str] = Field(
+        default_factory=list,
+        description="Stable evidence_id values (see evidence_store.EvidenceItem) actually "
+                     "used to support this finding. Existence of each ID against the case's "
+                     "evidence store is checked by output_validation, not by this schema, "
+                     "since that check requires state outside a single model instance.")
     affected_metrics: List[str] = Field(default_factory=list)
-    possible_explanations: List[str] = Field(default_factory=list)
-    recommended_follow_up: List[str] = Field(default_factory=list)
+    possible_explanations: List[str] = Field(
+        default_factory=list,
+        description="Hypotheses only — a possible cause, never asserted as fact.")
+    recommended_follow_up: List[str] = Field(
+        default_factory=list,
+        description="Recommended next actions for the human reviewer.")
     confidence_score: float
     evidence_sufficiency: EvidenceSufficiency
     unsupported_claim_risk: ClaimRisk
@@ -208,6 +220,9 @@ class CaseRecord(BaseModel):
     quarter: str
     segment: str
     metric_name: str
+    alert_type: str
+    release_version: str
+    threshold: float
     current_value: float
     previous_value: float
     historical_mean: float
@@ -225,6 +240,7 @@ class CaseRecord(BaseModel):
     ground_truth_severity: Severity
     ground_truth_anomaly_type: str
     ground_truth_reason: str
+    ground_truth_expected_escalation: bool
     available_evidence: str
     contradictory_evidence: bool
     missing_evidence_flag: bool
@@ -236,6 +252,7 @@ GROUND_TRUTH_FIELDS = [
     "ground_truth_severity",
     "ground_truth_anomaly_type",
     "ground_truth_reason",
+    "ground_truth_expected_escalation",
 ]
 
 

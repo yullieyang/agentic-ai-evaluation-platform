@@ -82,3 +82,20 @@ def test_json_schema_generation():
 
 def test_ground_truth_field_list_nonempty():
     assert len(GROUND_TRUTH_FIELDS) >= 4
+
+
+def test_evidence_ids_defaults_to_empty_list():
+    f = parse_model(AgentFinding, _valid_finding())
+    assert model_to_dict(f)["evidence_ids"] == []
+
+
+def test_evidence_ids_accepts_list_of_strings():
+    payload = _valid_finding()
+    payload["evidence_ids"] = ["case_0001-EV-01", "case_0001-EV-03"]
+    f = parse_model(AgentFinding, payload)
+    assert model_to_dict(f)["evidence_ids"] == ["case_0001-EV-01", "case_0001-EV-03"]
+
+
+def test_json_schema_includes_evidence_ids():
+    schema = json_schema(AgentFinding)
+    assert "evidence_ids" in schema["properties"]

@@ -15,6 +15,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from .evidence_store import EvidenceStore, build_case_evidence_items
 from .llm_providers import BaseProvider, ProviderResponse
 from .schemas import AgentFinding, assert_no_ground_truth, json_schema, parse_model
 from .utils import get_logger, load_config
@@ -49,6 +50,10 @@ class AgentResult:
     prompt_version: str
     total_retries: int
     mock_unsupported_injected: bool = False
+    tool_calls: int = 0  # always 0 for the single-shot path; kept for a uniform
+                         # interface with agentic_agent.AgenticResult so the
+                         # experiment runner can treat both the same way.
+    tool_call_log: list = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -61,12 +66,23 @@ def build_evidence(
     baseline_anomaly: bool,
     baseline_severity: str,
     evidence_completeness: str = "complete",
+    eval_cfg: dict | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return (prompt_evidence, mock_context_evidence).
 
     ``prompt_evidence`` is the human-readable block embedded in the prompt and is
     asserted free of ground-truth fields. ``mock_context_evidence`` is a machine
     summary used only by the offline mock provider.
+
+    This is the **single-shot** evidence path: every item is rendered into the
+    prompt up front, including a compact ``evidence_catalog`` (stable
+    ``evidence_id`` + one-line summary per item, from ``evidence_store``) the
+    agent can cite in ``AgentFinding.evidence_ids``. The **agentic** path
+    (``experiment_runner``'s ``architecture="agentic_tools"`` condition) does
+    not call this function — it retrieves the same underlying items on demand
+    through ``evidence_tools`` instead of receiving them all at once. Both
+    paths draw from the identical evidence set built by
+    ``evidence_store.build_case_evidence_items``.
     """
     triggered = [c for c in checks if c.triggered]
     mitigation_flags = [c.check_name for c in triggered if c.check_name in MITIGATION_CHECKS]
@@ -119,10 +135,29 @@ def build_evidence(
         prompt_evidence["chart_summary"] = {"note": "chart summary unavailable for this case"}
         available_sources = ["features"]
 
+    # Evidence catalog: the same ID-addressable items the agentic (tool-use)
+    # condition retrieves on demand, rendered here up front since this is the
+    # single-shot path. Lets the agent cite specific evidence_ids rather than
+    # only restating values.
+    eval_cfg = eval_cfg or load_config("evaluation.yaml")
+    items = build_case_evidence_items(
+        case_id=row["case_id"], row=row, features=features, checks=checks,
+        chart_summary=chart_summary, eval_cfg=eval_cfg,
+        include_deterministic=include_deterministic_evidence,
+    )
+    if evidence_completeness == "incomplete":
+        items = [i for i in items if i.kind == "metric_snapshot"]
+    prompt_evidence["evidence_catalog"] = [
+        {"evidence_id": i.evidence_id, "kind": i.kind, "summary": i.summary} for i in items
+    ]
+
     # Leakage guard: ground-truth fields must never appear in the agent prompt.
     assert_no_ground_truth(prompt_evidence)
 
     small_sample = int(row["sample_size"]) < 100
+    evidence_id_by_kind: dict[str, list[str]] = {}
+    for i in items:
+        evidence_id_by_kind.setdefault(i.kind, []).append(i.evidence_id)
     mock_evidence = {
         "metric_name": row["metric_name"],
         "z_score": row["z_score"],
@@ -136,6 +171,7 @@ def build_evidence(
         ),
         "incomplete": incomplete,
         "available_sources": available_sources,
+        "evidence_id_by_kind": evidence_id_by_kind,
     }
     return prompt_evidence, mock_evidence
 
@@ -159,9 +195,10 @@ class QAAgent:
     """Runs a single QA case through a provider with retry and validation."""
 
     def __init__(self, provider: BaseProvider, prompts_cfg: dict | None = None,
-                 max_retries: int = 2, max_tokens: int = 1500):
+                 eval_cfg: dict | None = None, max_retries: int = 2, max_tokens: int = 1500):
         self.provider = provider
         self.prompts_cfg = prompts_cfg or load_config("prompts.yaml")
+        self.eval_cfg = eval_cfg or load_config("evaluation.yaml")
         self.max_retries = max_retries
         self.max_tokens = max_tokens
         self._schema = json_schema(AgentFinding)
@@ -226,11 +263,23 @@ class QAAgent:
                 finding_dict = None
                 continue
 
+        # Same evidence store the catalog's IDs come from, so single-shot cases
+        # get the identical evidence-ID/numeric-consistency validation the
+        # agentic condition gets — the two architectures are checked the same
+        # way even though only one of them calls tools to get there.
+        store = EvidenceStore()
+        store.register(case["row"]["case_id"], build_case_evidence_items(
+            case_id=case["row"]["case_id"], row=case["row"], features=case["features"],
+            checks=case["checks"], chart_summary=case["chart_summary"], eval_cfg=self.eval_cfg,
+            include_deterministic=case["include_deterministic_evidence"],
+        ))
+
         assert last is not None
         return AgentResult(
             case_id=case["row"]["case_id"], finding=finding_dict,
             schema_valid=finding_dict is not None, validation_error=validation_error,
             response=last, prompt_version=prompt_version, total_retries=total_retries,
-            mock_unsupported_injected=unsupported_injected,
-            extra={"prompt_evidence": prompt_evidence, "mock_evidence": mock_evidence},
+            mock_unsupported_injected=unsupported_injected, tool_calls=0,
+            extra={"prompt_evidence": prompt_evidence, "mock_evidence": mock_evidence,
+                   "store": store, "max_tool_calls": 0},
         )

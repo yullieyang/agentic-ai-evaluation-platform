@@ -39,6 +39,26 @@ grids:
     scenario_filter: ["all", "adversarial"]
     mock_error_rate: [0.12]
 
+  mock_architecture_comparison:
+    description: >
+      Single-shot vs. agentic (tool-using) comparison, mock mode. Both
+      conditions draw from the identical per-case evidence store and use the
+      same underlying mock decision policy — this isolates the evidence-
+      delivery mechanism (pre-supplied vs. tool-retrieved) from decision
+      quality. It measures tool-call count, latency, and evidence-citation
+      mechanics; it does not measure whether a live agentic Claude run would
+      perform differently than single-shot — only a live run could show that.
+    provider: ["mock"]
+    model: ["mock-deterministic"]
+    prompt_version: ["prompt_c_evidence_constrained"]
+    temperature: [0.0]
+    architecture: ["single_shot", "agentic_tools"]
+    include_deterministic_evidence: [true]
+    reviewer_enabled: [true]
+    evidence_completeness: ["complete"]
+    scenario_filter: ["all"]
+    mock_error_rate: [0.12]
+
 # Example live-model grid (NOT run by default; requires API keys). Provided for
 # documentation and reproducibility only.
 live_example:
@@ -48,6 +68,7 @@ live_example:
     model: ["claude-opus-4-8"]
     prompt_version: ["prompt_c_evidence_constrained"]
     temperature: [0.0]
+    architecture: ["single_shot", "agentic_tools"]
     include_deterministic_evidence: [true, false]
     reviewer_enabled: [true, false]
     evidence_completeness: ["complete"]

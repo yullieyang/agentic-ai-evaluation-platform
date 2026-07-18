@@ -59,6 +59,27 @@ def _mock_banner(manifest):
                    "not measurements of any real model.")
 
 
+def page_review_queue(cases, manifest):
+    st.title("Review Queue")
+    _mock_banner(manifest)
+    if cases.empty:
+        st.info("No case-level outputs found. Run `python -m src.experiment_runner`.")
+        return
+    exp_id = st.selectbox("Experiment", sorted(cases["experiment_id"].unique()), key="queue_exp")
+    sub = cases[cases["experiment_id"] == exp_id].copy()
+    only_escalated = st.checkbox("Show only cases requiring human review", value=False)
+    if only_escalated and "escalate" in sub.columns:
+        sub = sub[sub["escalate"]]
+    cols = [c for c in ["case_id", "alert_type", "pred_severity", "pred_anomaly", "confidence",
+                        "reviewer_decision", "escalate", "escalation_reasons", "schema_valid",
+                        "tool_calls"] if c in sub.columns]
+    st.caption(f"{len(sub)} case(s) in this experiment"
+               + (" requiring human review." if only_escalated else "."))
+    st.dataframe(sub[cols].rename(columns={"pred_anomaly": "anomaly_detected",
+                                           "escalate": "requires_human_review"}),
+                use_container_width=True, height=520)
+
+
 def page_overview(exp, cases, manifest):
     st.title("Study Overview")
     _mock_banner(manifest)
@@ -130,6 +151,9 @@ def page_case_review(exp, cases, df, sidecar, agg, manifest):
         st.json({k: drow[k] for k in ["current_value", "previous_value", "historical_mean",
                                       "historical_std", "percent_change", "z_score",
                                       "sample_size", "missing_rate", "expected_direction"]})
+        st.caption(f"Alert type: **{rec.get('alert_type', 'n/a')}** · Release: "
+                  f"**{rec.get('release_version', 'n/a')}** — shown here for human review only; "
+                  f"never part of the agent's prompt (see evidence_store's leakage note).")
         st.subheader("Agent finding")
         st.json({k: rec[k] for k in ["pred_anomaly", "pred_severity", "abstained", "confidence",
                                      "evidence_sufficiency", "unsupported_claim_risk",
@@ -140,9 +164,34 @@ def page_case_review(exp, cases, df, sidecar, agg, manifest):
     with right:
         st.subheader("Deterministic baseline")
         st.json({"baseline_anomaly": rec["baseline_anomaly"]})
+
+        st.subheader("Run diagnostics")
+        arch = rec.get("architecture", "single_shot")
+        diag_cols = st.columns(2)
+        diag_cols[0].metric("Architecture", arch)
+        diag_cols[1].metric("Tool calls", int(rec.get("tool_calls", 0)))
+        diag_cols = st.columns(2)
+        diag_cols[0].metric("Schema valid", "yes" if rec.get("schema_valid") else "no")
+        diag_cols[1].metric("Retries used", int(rec.get("total_retries", 0)))
+        if not rec.get("schema_valid", True) and rec.get("validation_error"):
+            st.error(f"Schema validation failed: {rec['validation_error']}")
+
+        st.subheader("Deterministic output validation")
+        if rec.get("deterministic_validation_passed", True):
+            st.success("All deterministic checks passed.")
+        else:
+            st.warning(f"Failed checks: {rec.get('deterministic_validation_failed_checks', '')}")
+
+        st.subheader("Human-review escalation")
+        if rec.get("escalate"):
+            st.warning(f"Escalated — reasons: {rec.get('escalation_reasons', '')}")
+        else:
+            st.success("Auto-approved — no escalation trigger fired.")
+
         if research_mode:
             st.subheader("⚠ Ground truth (research mode only — never shown to the agent)")
-            st.json({k: rec[k] for k in ["gt_anomaly", "gt_severity", "gt_anomaly_type"]})
+            st.json({k: rec[k] for k in ["gt_anomaly", "gt_severity", "gt_anomaly_type",
+                                         "gt_expected_escalation"]})
         else:
             st.info("Enable research mode to reveal ground-truth labels. Ground truth is "
                     "never part of the agent's evidence.")
@@ -168,17 +217,39 @@ def page_comparison(exp, manifest):
     if exp.empty:
         st.info("No experiment outputs found.")
         return
-    main = exp[exp["grid"] == "mock_main"] if "grid" in exp.columns else exp
-    metric = st.selectbox("Metric", ["pre_precision", "pre_recall", "pre_f1",
-                                     "pre_false_positive_rate", "pre_unsupported_claim_rate",
-                                     "pre_expected_calibration_error", "pre_avg_latency_s",
-                                     "pre_avg_estimated_cost"])
-    by = st.selectbox("Group by", ["prompt_version", "include_deterministic_evidence",
-                                   "reviewer_enabled", "evidence_completeness"])
+    grid_options = sorted(exp["grid"].unique()) if "grid" in exp.columns else ["(all)"]
+    grid_name = st.selectbox("Grid", grid_options,
+                             index=grid_options.index("mock_main") if "mock_main" in grid_options else 0)
+    main = exp[exp["grid"] == grid_name] if "grid" in exp.columns else exp
+
+    metric_options = ["pre_precision", "pre_recall", "pre_f1",
+                      "pre_false_positive_rate", "pre_unsupported_claim_rate",
+                      "pre_expected_calibration_error", "pre_avg_latency_s",
+                      "pre_avg_estimated_cost"]
+    for extra in ["pre_avg_tool_calls", "pre_evidence_citation_accuracy",
+                  "pre_deterministic_validation_pass_rate", "pre_escalation_rate"]:
+        if extra in main.columns and main[extra].notna().any():
+            metric_options.append(extra)
+    metric = st.selectbox("Metric", metric_options)
+
+    by_options = [c for c in ["architecture", "prompt_version", "include_deterministic_evidence",
+                              "reviewer_enabled", "evidence_completeness"]
+                 if c in main.columns and main[c].nunique() > 1]
+    if not by_options:
+        by_options = ["prompt_version"]
+    by = st.selectbox("Group by", by_options)
+
     agg = main.groupby(by)[metric].mean().reset_index()
     st.plotly_chart(px.bar(agg, x=by, y=metric, title=f"{metric} by {by}"), use_container_width=True)
-    st.dataframe(main[["experiment_id", "prompt_version", "include_deterministic_evidence",
-                       "reviewer_enabled", metric]].round(3))
+    if by == "architecture" or "architecture" in main.columns:
+        st.caption("Single-shot vs. agentic (tool-using) in mock mode isolates the evidence-"
+                  "delivery mechanism (pre-supplied vs. retrieved) — it does not demonstrate "
+                  "whether a live agentic Claude run would perform differently; only a live run "
+                  "could show that.")
+    display_cols = [c for c in ["experiment_id", "architecture", "prompt_version",
+                                "include_deterministic_evidence", "reviewer_enabled", metric]
+                    if c in main.columns]
+    st.dataframe(main[display_cols].round(3))
 
 
 def page_failure(cases, manifest):
@@ -258,14 +329,53 @@ def page_reproducibility(manifest):
                "`python -m src.experiment_runner`.")
 
 
+def page_methodology(manifest):
+    st.title("Methodology & Limitations")
+    _mock_banner(manifest)
+    st.markdown(
+        "**Mock vs. live, plainly stated:** every number in this dashboard, unless the "
+        "run manifest above says otherwise, comes from the offline deterministic mock "
+        "provider. It is a simulation used to demonstrate the evaluation methodology, "
+        "not a measurement of a production model or deployed business system. Live "
+        "Anthropic tool-use code exists in this repository (`src/llm_providers.py`, "
+        "`src/agentic_agent.py`) and is unit-tested against a stubbed client, but it "
+        "has not been executed against the live API in the environment that produced "
+        "these results — there was no API key available."
+    )
+    st.subheader("Single-shot vs. agentic comparison — what it does and doesn't show")
+    st.markdown(
+        "- **Does show:** tool-call counts, latency overhead, and evidence-citation "
+        "mechanics of retrieving evidence through tools vs. receiving it pre-supplied.\n"
+        "- **Does not show:** whether a live agentic Claude run would find different "
+        "or better findings than single-shot. In mock mode, both architectures "
+        "deliberately share the same underlying decision policy, to isolate the "
+        "evidence-delivery mechanism as the only controlled variable."
+    )
+    st.subheader("Known limitations")
+    st.markdown(
+        "- The deterministic baseline, the surface-pattern unsupported-claim detector, "
+        "and the escalation policy are documented approximations, not ground truth.\n"
+        "- `data/labeled_scenarios.json`'s per-scenario descriptions are empty — the "
+        "real documentation for each scenario generator lives in code comments.\n"
+        "- The synthetic dataset is case-structured rather than a dense panel, so "
+        "cross-segment and cross-metric features are approximate.\n"
+        "- This is a local research prototype: no production security, access "
+        "control, or multi-user persistence is implemented. The human-review store "
+        "is a single local SQLite file."
+    )
+
+
 def main():
     exp, cases, calib, agg, manifest = load_outputs()
     df, sidecar = load_dataset()
-    page = st.sidebar.radio("Page", ["Study Overview", "Case Review", "Experiment Comparison",
-                                     "Failure Analysis", "Calibration", "Human Review",
+    page = st.sidebar.radio("Page", ["Study Overview", "Review Queue", "Case Review",
+                                     "Experiment Comparison", "Failure Analysis", "Calibration",
+                                     "Human Review", "Methodology & Limitations",
                                      "Reproducibility"])
     if page == "Study Overview":
         page_overview(exp, cases, manifest)
+    elif page == "Review Queue":
+        page_review_queue(cases, manifest)
     elif page == "Case Review":
         page_case_review(exp, cases, df, sidecar, agg, manifest)
     elif page == "Experiment Comparison":
@@ -276,6 +386,8 @@ def main():
         page_calibration(exp, calib, manifest)
     elif page == "Human Review":
         page_human_review(manifest)
+    elif page == "Methodology & Limitations":
+        page_methodology(manifest)
     elif page == "Reproducibility":
         page_reproducibility(manifest)
 

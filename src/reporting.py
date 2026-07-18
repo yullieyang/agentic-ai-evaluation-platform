@@ -141,6 +141,10 @@ def run_research_contrasts(df: Optional[pd.DataFrame] = None) -> dict[str, Any]:
     rq2 = contrast_rate(main, "prompt_version", "prompt_a_zero_shot",
                         "prompt_c_evidence_constrained", fixed={}, indicator_col="has_unsupported_claim")
     rq3 = reviewer_prepost_contrast(main)
+    rq9 = contrast_correctness(
+        main, "architecture", "single_shot", "agentic_tools",
+        fixed={"prompt_version": "prompt_c_evidence_constrained", "reviewer_enabled": True},
+    )
 
     pvals = []
     labels = []
@@ -148,6 +152,7 @@ def run_research_contrasts(df: Optional[pd.DataFrame] = None) -> dict[str, Any]:
         ("RQ1_correctness", rq1.get("mcnemar", {})),
         ("RQ2_unsupported_rate", rq2.get("permutation", {})),
         ("RQ3_reviewer_correctness", rq3.get("mcnemar", {})),
+        ("RQ9_architecture_correctness", rq9.get("mcnemar", {})),
     ]:
         p = blob.get("p_value")
         if p is not None:
@@ -161,6 +166,7 @@ def run_research_contrasts(df: Optional[pd.DataFrame] = None) -> dict[str, Any]:
         "rq1_deterministic_evidence": {"correctness": rq1, "unsupported_rate": rq1_prec},
         "rq2_prompt_sensitivity_zero_vs_evidence": rq2,
         "rq3_reviewer_prepost": rq3,
+        "rq9_single_shot_vs_agentic": rq9,
         "multiple_comparison_correction": {"method": "benjamini_hochberg", "family": bh_map},
     }
 
@@ -193,6 +199,7 @@ def generate_research_summary() -> str:
     rq1 = contrasts["rq1_deterministic_evidence"]["correctness"]
     rq2 = contrasts["rq2_prompt_sensitivity_zero_vs_evidence"]
     rq3 = contrasts["rq3_reviewer_prepost"]
+    rq9 = contrasts["rq9_single_shot_vs_agentic"]
     bh = contrasts["multiple_comparison_correction"]["family"]
 
     lines: list[str] = []
@@ -269,6 +276,39 @@ def generate_research_summary() -> str:
         "incomplete-evidence condition raises the abstention rate and lowers recall, "
         "consistent with the intended abstention behaviour.\n"
     )
+    lines.append("## RQ9 — Single-shot vs. agentic (tool-using) architecture\n")
+    arch_exp = exp[exp["grid"] == "mock_architecture_comparison"]
+    if not arch_exp.empty and rq9.get("n_pairs", 0) > 0:
+        mc9 = rq9["mcnemar"]
+        single = arch_exp[arch_exp["architecture"] == "single_shot"].iloc[0]
+        agentic = arch_exp[arch_exp["architecture"] == "agentic_tools"].iloc[0]
+        lines.append(
+            f"Paired by case (n={rq9['n_pairs']}), prompt_c_evidence_constrained, reviewer on: "
+            f"decision accuracy {rq9['accuracy_a']:.3f} (single-shot) vs {rq9['accuracy_b']:.3f} "
+            f"(agentic), McNemar p={_fmt_p(mc9.get('p_value'))} "
+            f"(BH-adjusted p={_fmt_p(bh.get('RQ9_architecture_correctness', {}).get('adjusted_p'))}).\n"
+        )
+        lines.append(
+            f"Average tool calls: {single.get('pre_avg_tool_calls', 0):.2f} (single-shot) vs "
+            f"{agentic.get('pre_avg_tool_calls', 0):.2f} (agentic). Average latency: "
+            f"{single.get('pre_avg_latency_s', 0):.4f}s vs {agentic.get('pre_avg_latency_s', 0):.4f}s. "
+            f"Evidence-citation accuracy: {single.get('pre_evidence_citation_accuracy', float('nan')):.3f} "
+            f"vs {agentic.get('pre_evidence_citation_accuracy', float('nan')):.3f}.\n"
+        )
+        lines.append(
+            "**Interpretation:** in mock mode, both architectures deliberately share the same "
+            "underlying decision policy — this isolates the evidence-delivery mechanism "
+            "(pre-supplied vs. tool-retrieved) as the controlled variable, so any accuracy "
+            "difference here reflects seeding noise, not a real capability gap. This comparison "
+            "demonstrates that the agentic tool-call loop, evidence citation, and per-case "
+            "tool-call accounting all work correctly end to end. It does **not** demonstrate "
+            "whether a live agentic Claude run would find different or better findings than "
+            "single-shot — only a live run against the real API could show that.\n"
+        )
+    else:
+        lines.append("No architecture-comparison results found — run the "
+                     "`mock_architecture_comparison` grid to populate this section.\n")
+
     lines.append("## Limitations\n")
     lines.append(
         "- All findings are simulation under a documented mock generative process and do not "

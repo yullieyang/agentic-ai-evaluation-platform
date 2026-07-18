@@ -185,6 +185,27 @@ def evaluate_records(
     metrics["avg_estimated_cost"] = float(np.mean(costs)) if costs else 0.0
     metrics["total_estimated_cost"] = float(np.sum(costs)) if costs else 0.0
     metrics["avg_retries"] = float(np.mean([r["total_retries"] for r in records]))
+
+    # Agentic-architecture-specific aggregates (0 for single-shot records, which
+    # always report tool_calls=0 by construction).
+    if any("tool_calls" in r for r in records):
+        metrics["avg_tool_calls"] = float(np.mean([r.get("tool_calls", 0) for r in records]))
+    citation_flags = [r.get("evidence_citation_correct") for r in records
+                      if r.get("evidence_citation_correct") is not None]
+    if citation_flags:
+        metrics["evidence_citation_accuracy"] = float(np.mean([bool(c) for c in citation_flags]))
+    if any("deterministic_validation_passed" in r for r in records):
+        metrics["deterministic_validation_pass_rate"] = float(
+            np.mean([bool(r.get("deterministic_validation_passed", True)) for r in records]))
+    if any("escalate" in r for r in records):
+        metrics["escalation_rate"] = float(np.mean([bool(r.get("escalate", False)) for r in records]))
+    if any("gt_expected_escalation" in r for r in records) and any("escalate" in r for r in records):
+        esc_metrics = classification_metrics(
+            [bool(r.get("gt_expected_escalation", False)) for r in records],
+            [bool(r.get("escalate", False)) for r in records],
+        )
+        metrics["escalation_precision"] = esc_metrics.get("precision")
+        metrics["escalation_recall"] = esc_metrics.get("recall")
     return metrics
 
 

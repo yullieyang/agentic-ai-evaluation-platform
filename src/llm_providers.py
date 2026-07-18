@@ -50,6 +50,7 @@ class ProviderResponse:
     retry_count: int
     timestamp: str
     is_mock: bool = False
+    tool_calls: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -76,6 +77,28 @@ class BaseProvider(abc.ABC):
         context: dict | None = None,
     ) -> ProviderResponse:
         ...
+
+    def complete_with_tools(
+        self,
+        system: str,
+        user: str,
+        *,
+        model: str,
+        tool_specs: list[dict[str, Any]],
+        executor: Any,  # evidence_tools.ToolExecutor
+        temperature: float = 0.0,
+        max_tokens: int = 1500,
+        schema: dict | None = None,
+        context: dict | None = None,
+    ) -> ProviderResponse:
+        """Run a bounded tool-use loop and return a final schema-constrained
+        response. Only implemented by providers that support the agentic
+        (tool-using) condition; the base implementation raises so an
+        unsupported provider fails loudly rather than silently behaving like
+        the single-shot path."""
+        raise NotImplementedError(
+            f"provider '{self.name}' does not implement the agentic tool-use condition"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -155,6 +178,70 @@ class MockProvider(BaseProvider):
             parsed=finding, raw=raw, provider=self.name, model=model, latency_s=latency,
             input_tokens=in_tok, output_tokens=len(raw) // 4, estimated_cost=0.0,
             parsing_error=None, retry_count=attempt, timestamp=_now(), is_mock=True,
+        )
+
+    def complete_with_tools(self, system, user, *, model, tool_specs, executor,
+                            temperature=0.0, max_tokens=1500, schema=None,
+                            context=None) -> ProviderResponse:
+        """Deterministic offline simulation of the agentic (tool-using) condition.
+
+        This does not fake tool calls — it drives the *real* ``ToolExecutor``
+        against the case's real ``EvidenceStore`` with a scripted, seeded
+        retrieval policy (list evidence, then fetch metrics/baseline and,
+        conditionally, mitigation-relevant items), so ``executor.call_log`` and
+        ``executor.calls_made`` reflect genuine dispatch through the same code
+        path the live Anthropic tool loop uses.
+
+        The final decision reuses the exact same ``_decide`` logic as the
+        single-shot mock path, deliberately: this experiment is designed to
+        isolate the *evidence-delivery mechanism* (pre-supplied vs. retrieved)
+        from *decision quality*, per the documented single-shot/agentic
+        comparison design. It does **not** demonstrate that a live agentic
+        Claude run would perform differently than single-shot — only a live
+        run could show that; this mock only proves the retrieval/tool-limit/
+        citation machinery works end-to-end.
+        """
+        context = context or {}
+        attempt = int(context.get("attempt", 0))
+        rng = np.random.default_rng(self._seed(context, attempt))
+        profile = MockProfile(**context.get("profile", {}))
+        case_id = context.get("case_id")
+
+        latency = self.base_latency + float(rng.uniform(0.08, 0.35))
+        in_tok = int(len(user) / 4) + 150
+        ev = context.get("evidence", {})
+
+        # Scripted, deterministic retrieval policy.
+        listing = executor.call("list_available_evidence", {"case_id": case_id})
+        by_kind: dict[str, list[str]] = {}
+        for item in listing.get("items", []):
+            by_kind.setdefault(item["kind"], []).append(item["evidence_id"])
+        executor.call("get_case_metrics", {"case_id": case_id})
+        z = abs(float(ev.get("z_score", 0.0)))
+        if ev.get("baseline_anomaly") or z >= 2:
+            executor.call("get_historical_baseline", {"case_id": case_id})
+        if ev.get("mitigation_flags"):
+            executor.call("get_release_notes", {"case_id": case_id})
+            for eid in by_kind.get("seasonality_indicator", [])[:1]:
+                executor.call("get_evidence_item", {"case_id": case_id, "evidence_id": eid})
+        if "deterministic" in ev.get("available_sources", []) and ev.get("baseline_anomaly"):
+            for eid in by_kind.get("deterministic_check", [])[:1]:
+                executor.call("get_evidence_item", {"case_id": case_id, "evidence_id": eid})
+
+        finding = self._decide(context, rng, profile)
+        # Reconcile cited evidence_ids against what was actually retrieved this
+        # run (the tool-use condition can only cite IDs it fetched).
+        fetched_ids = {e.result["evidence_id"] for e in executor.call_log
+                       if e.ok and isinstance(e.result, dict) and "evidence_id" in e.result}
+        finding["evidence_ids"] = [i for i in finding.get("evidence_ids", []) if i in fetched_ids] \
+            or list(fetched_ids)[:1]
+
+        raw = json.dumps(finding)
+        return ProviderResponse(
+            parsed=finding, raw=raw, provider=self.name, model=model, latency_s=latency,
+            input_tokens=in_tok, output_tokens=len(raw) // 4, estimated_cost=0.0,
+            parsing_error=None, retry_count=attempt, timestamp=_now(), is_mock=True,
+            tool_calls=executor.calls_made,
         )
 
     def _review(self, ctx: dict, rng: np.random.Generator, prof: MockProfile) -> dict:
@@ -269,6 +356,8 @@ class MockProvider(BaseProvider):
             possible.append("Investigate input-data distribution shift (hypothesis).")
 
         evidence_items = []
+        evidence_ids: list[str] = []
+        id_map = ev.get("evidence_id_by_kind", {})
         if decision or z >= 2:
             evidence_items.append({
                 "metric_name": ev.get("metric_name", "metric"),
@@ -278,6 +367,7 @@ class MockProvider(BaseProvider):
                 "source": "feature",
                 "relevance": "Standardized deviation from historical mean.",
             })
+            evidence_ids.extend(id_map.get("metric_snapshot", [])[:1])
         if "deterministic" in ev.get("available_sources", []) and baseline_anom:
             evidence_items.append({
                 "metric_name": "deterministic_check",
@@ -287,6 +377,10 @@ class MockProvider(BaseProvider):
                 "source": "deterministic_check",
                 "relevance": "Rule baseline flagged a magnitude exceedance.",
             })
+            evidence_ids.extend(id_map.get("deterministic_check", [])[:1])
+        if not abstained and mitigations:
+            evidence_ids.extend(id_map.get("seasonality_indicator", [])[:1])
+            evidence_ids.extend(id_map.get("recovery_indicator", [])[:1])
 
         sufficiency = "insufficient" if abstained else (
             "limited" if (small_sample or missing_rate >= 0.05) else "adequate")
@@ -308,6 +402,7 @@ class MockProvider(BaseProvider):
                 f"missing_rate {missing_rate:.3f}",
             ],
             "supporting_evidence": evidence_items,
+            "evidence_ids": evidence_ids,
             "affected_metrics": [ev.get("metric_name", "metric")] if decision else [],
             "possible_explanations": possible,
             "recommended_follow_up": (
@@ -347,7 +442,17 @@ class AnthropicProvider(BaseProvider):
         if schema is not None:
             kwargs["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
         start = time.time()
-        resp = self._client.messages.create(**kwargs)
+        try:
+            resp = self._client.messages.create(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            # Distinguishable from a model-quality/parsing failure: this is the
+            # provider/network/auth layer, not the model's output.
+            return ProviderResponse(
+                parsed=None, raw="", provider=self.name, model=model,
+                latency_s=time.time() - start, input_tokens=0, output_tokens=0,
+                estimated_cost=None, parsing_error=f"provider error: {type(exc).__name__}: {exc}",
+                retry_count=int((context or {}).get("attempt", 0)), timestamp=_now(),
+            )
         latency = time.time() - start
         text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
         in_tok = getattr(resp.usage, "input_tokens", 0)
@@ -359,6 +464,106 @@ class AnthropicProvider(BaseProvider):
             estimated_cost=estimate_cost(model, in_tok, out_tok), parsing_error=err,
             retry_count=int((context or {}).get("attempt", 0)), timestamp=_now(),
         )
+
+    def complete_with_tools(self, system, user, *, model, tool_specs, executor,
+                            temperature=0.0, max_tokens=1500, schema=None,
+                            context=None) -> ProviderResponse:
+        """Bounded Claude tool-use loop against the local ``ToolExecutor``.
+
+        Two-phase pattern, verified against the installed ``anthropic`` SDK
+        (0.117.0): (1) loop with ``tools=`` until the model stops requesting
+        tool calls or the executor's call limit is reached; (2) one final
+        call with ``tools`` omitted and ``output_config`` set, so the last
+        turn is forced into the same JSON-schema-constrained shape the
+        single-shot path already uses. Combining live ``tools=`` with
+        ``output_config`` in the same call is not a pattern this codebase
+        relies on or has verified, so the schema is only enforced on that
+        final, tool-free turn.
+
+        IMPORTANT: this method has not been executed against the live API in
+        this environment (no ANTHROPIC_API_KEY was available) — see the
+        mock-vs-live disclosure in the README and dashboard. It is written
+        and unit-tested against a stubbed client that exercises this exact
+        control flow (tool_use -> tool_result -> ... -> final schema call);
+        that is the strongest verification possible without a live key.
+        """
+        import time
+
+        messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
+        start = time.time()
+        total_in_tok = 0
+        total_out_tok = 0
+
+        def _provider_error(exc: Exception) -> ProviderResponse:
+            return ProviderResponse(
+                parsed=None, raw="", provider=self.name, model=model,
+                latency_s=time.time() - start, input_tokens=total_in_tok, output_tokens=total_out_tok,
+                estimated_cost=None, parsing_error=f"provider error: {type(exc).__name__}: {exc}",
+                retry_count=int((context or {}).get("attempt", 0)), timestamp=_now(),
+                tool_calls=executor.calls_made,
+            )
+
+        while not executor.limit_reached():
+            try:
+                resp = self._client.messages.create(
+                    model=model, max_tokens=max_tokens, system=system,
+                    messages=messages, tools=tool_specs,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return _provider_error(exc)
+            total_in_tok += getattr(resp.usage, "input_tokens", 0)
+            total_out_tok += getattr(resp.usage, "output_tokens", 0)
+            tool_use_blocks = [b for b in resp.content if getattr(b, "type", "") == "tool_use"]
+            if not tool_use_blocks:
+                break
+            messages.append({"role": "assistant", "content": [_block_to_param(b) for b in resp.content]})
+            tool_results = []
+            for block in tool_use_blocks:
+                if executor.limit_reached():
+                    tool_results.append({"type": "tool_result", "tool_use_id": block.id,
+                                         "content": json.dumps({"error": "tool-call limit reached"}),
+                                         "is_error": True})
+                    continue
+                result = executor.call(block.name, block.input or {})
+                tool_results.append({"type": "tool_result", "tool_use_id": block.id,
+                                     "content": json.dumps(result),
+                                     "is_error": "error" in result})
+            messages.append({"role": "user", "content": tool_results})
+
+        # Final, tool-free call forced into the AgentFinding schema.
+        messages.append({"role": "user", "content": "Return your final structured finding now."})
+        final_kwargs: dict[str, Any] = dict(model=model, max_tokens=max_tokens, system=system,
+                                            messages=messages)
+        if schema is not None:
+            final_kwargs["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
+        try:
+            final_resp = self._client.messages.create(**final_kwargs)
+        except Exception as exc:  # noqa: BLE001
+            return _provider_error(exc)
+        latency = time.time() - start
+        total_in_tok += getattr(final_resp.usage, "input_tokens", 0)
+        total_out_tok += getattr(final_resp.usage, "output_tokens", 0)
+        text = "".join(b.text for b in final_resp.content if getattr(b, "type", "") == "text")
+        parsed, err = _safe_parse(text)
+        return ProviderResponse(
+            parsed=parsed, raw=text, provider=self.name, model=model, latency_s=latency,
+            input_tokens=total_in_tok, output_tokens=total_out_tok,
+            estimated_cost=estimate_cost(model, total_in_tok, total_out_tok), parsing_error=err,
+            retry_count=int((context or {}).get("attempt", 0)), timestamp=_now(),
+            tool_calls=executor.calls_made,
+        )
+
+
+def _block_to_param(block: Any) -> dict[str, Any]:
+    """Convert an Anthropic response content block back into the plain-dict
+    shape needed to resubmit it as message content in the next turn."""
+    block_type = getattr(block, "type", "")
+    if block_type == "text":
+        return {"type": "text", "text": block.text}
+    if block_type == "tool_use":
+        return {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
+    # Fall back to whatever the SDK gives us for any other block type.
+    return block.model_dump() if hasattr(block, "model_dump") else dict(block)
 
 
 class OpenAIProvider(BaseProvider):

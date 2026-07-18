@@ -1,11 +1,12 @@
 {
   "grids": [
     "mock_main",
-    "mock_ablation"
+    "mock_ablation",
+    "mock_architecture_comparison"
   ],
-  "timestamp": "2026-06-21T00:23:05.175188Z",
+  "timestamp": "2026-07-18T12:09:30.679008Z",
   "seed": 13,
-  "n_conditions": 20,
+  "n_conditions": 22,
   "n_cases": 600,
   "dataset_version": "synthetic-v1",
   "mock_mode": true,
@@ -14,10 +15,11 @@
     "ground_truth_anomaly",
     "ground_truth_severity",
     "ground_truth_anomaly_type",
-    "ground_truth_reason"
+    "ground_truth_reason",
+    "ground_truth_expected_escalation"
   ],
   "environment": {
-    "git_commit": null,
+    "git_commit": "9cba29ed6fafe440e09c6e42b4461ebc3ebc6849",
     "dependencies": {
       "python": "3.11.5",
       "pandas": "2.0.3",

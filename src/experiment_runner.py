@@ -16,13 +16,17 @@ from typing import Any, Iterable
 
 import pandas as pd
 
-from .agent import QAAgent
+from .agent import PROMPT_PROFILES, QAAgent, build_evidence
+from .agentic_agent import ToolUsingQAAgent
 from .calibration import reliability_curve
 from .chart_summaries import build_chart_summary
 from .deterministic_checks import baseline_decision, run_checks
+from .escalation import decide_escalation
 from .evaluators import classification_metrics, detect_unsupported_claim, evaluate_records, group_metrics
+from .evidence_store import EvidenceStore, build_case_evidence_items
 from .feature_engineering import build_features
 from .llm_providers import get_provider
+from .output_validation import all_passed, run_output_validation
 from .reviewer_agent import ReviewerAgent
 from .schemas import GROUND_TRUTH_FIELDS
 from .utils import (DATA_DIR, OUTPUT_DIR, append_jsonl, environment_metadata, get_logger,
@@ -31,10 +35,12 @@ from .utils import (DATA_DIR, OUTPUT_DIR, append_jsonl, environment_metadata, ge
 LOGGER = get_logger("experiment_runner")
 
 GRID_AXES = [
-    "provider", "model", "prompt_version", "temperature",
+    "provider", "model", "prompt_version", "temperature", "architecture",
     "include_deterministic_evidence", "reviewer_enabled",
     "evidence_completeness", "scenario_filter", "mock_error_rate",
 ]
+
+DEFAULT_MAX_TOOL_CALLS = 6
 
 
 # --------------------------------------------------------------------------- #
@@ -91,7 +97,8 @@ def _filter_cases(df: pd.DataFrame, scenario_filter: str) -> list[str]:
 # --------------------------------------------------------------------------- #
 # Per-case evaluation record
 # --------------------------------------------------------------------------- #
-def _eval_record(row: dict, agent_res, review_res, condition: dict, experiment_id: str) -> dict:
+def _eval_record(row: dict, agent_res, review_res, condition: dict, experiment_id: str,
+                 validation_results: list, escalation) -> dict:
     finding = agent_res.finding or {}
     pred_anom = bool(finding.get("anomaly_detected", False)) if agent_res.schema_valid else False
     pred_sev = finding.get("severity", "none") if agent_res.schema_valid else "none"
@@ -111,11 +118,21 @@ def _eval_record(row: dict, agent_res, review_res, condition: dict, experiment_i
         reviewer_unsupported = 0
         reviewer_decision = None
 
+    failed_checks = [r.check_name for r in validation_results if not r.passed]
+    cited_ids = finding.get("evidence_ids", []) or []
+    store = agent_res.extra.get("store")
+    cid = row["case_id"]
+    evidence_citation_correct = (
+        all(store.exists(cid, eid) for eid in cited_ids) if (store is not None and cited_ids) else None
+    )
+
     return {
         "experiment_id": experiment_id,
         **{ax: condition.get(ax) for ax in GRID_AXES},
-        "case_id": row["case_id"],
+        "case_id": cid,
         "model_id": row["model_id"],
+        "alert_type": row["alert_type"],  # safe for human-facing display; never shown to the agent
+        "release_version": row["release_version"],
         "metric_name": row["metric_name"],
         "segment": row["segment"],
         "scenario_type": row["scenario_type"],
@@ -123,6 +140,7 @@ def _eval_record(row: dict, agent_res, review_res, condition: dict, experiment_i
         "gt_anomaly": bool(row["ground_truth_anomaly"]),
         "gt_severity": row["ground_truth_severity"],
         "gt_anomaly_type": row["ground_truth_anomaly_type"],
+        "gt_expected_escalation": bool(row["ground_truth_expected_escalation"]),
         "baseline_anomaly": bool(agent_res.extra.get("baseline_anomaly", False)),
         "pred_anomaly": pred_anom,
         "pred_severity": pred_sev,
@@ -133,16 +151,23 @@ def _eval_record(row: dict, agent_res, review_res, condition: dict, experiment_i
         "unsupported_claim_risk": finding.get("unsupported_claim_risk", "low"),
         "requires_human_review": bool(finding.get("requires_human_review", True)) if agent_res.schema_valid else True,
         "n_supporting_evidence": len(finding.get("supporting_evidence", []) or []),
+        "n_evidence_ids_cited": len(cited_ids),
+        "evidence_citation_correct": evidence_citation_correct,
         "n_followup": len(finding.get("recommended_follow_up", []) or []),
         "has_unsupported_claim": bool(has_unsupported),
         "mock_unsupported_injected": agent_res.mock_unsupported_injected,
         "schema_valid": bool(agent_res.schema_valid),
         "validation_error": agent_res.validation_error,
+        "deterministic_validation_passed": all_passed(validation_results),
+        "deterministic_validation_failed_checks": ",".join(failed_checks) if failed_checks else "",
         "post_anomaly": post_anom,
         "post_severity": post_sev,
         "post_confidence": post_conf,
         "reviewer_decision": reviewer_decision,
         "reviewer_unsupported_found": reviewer_unsupported,
+        "escalate": bool(escalation.escalate),
+        "escalation_reasons": ",".join(escalation.reasons) if escalation.reasons else "",
+        "tool_calls": int(agent_res.tool_calls),
         "latency_s": agent_res.response.latency_s + (review_res.response.latency_s if review_res else 0.0),
         "input_tokens": agent_res.response.input_tokens + (review_res.response.input_tokens if review_res else 0),
         "output_tokens": agent_res.response.output_tokens + (review_res.response.output_tokens if review_res else 0),
@@ -163,14 +188,17 @@ def run_condition(condition: dict, df: pd.DataFrame, bundle: dict, experiment_id
         provider_kwargs["error_rate"] = float(condition.get("mock_error_rate", 0.12))
     provider = get_provider(condition["provider"], **provider_kwargs)
 
-    agent = QAAgent(provider, prompts_cfg=prompts_cfg, max_retries=2)
+    architecture = condition.get("architecture", "single_shot")
+    single_shot_agent = QAAgent(provider, prompts_cfg=prompts_cfg, max_retries=2)
+    agentic_agent = ToolUsingQAAgent(provider, prompts_cfg=prompts_cfg, max_retries=2,
+                                     max_tool_calls=DEFAULT_MAX_TOOL_CALLS)
     reviewer = ReviewerAgent(provider, prompts_cfg=prompts_cfg) if condition["reviewer_enabled"] else None
 
     case_ids = _filter_cases(df, condition.get("scenario_filter", "all"))
     records: list[dict] = []
     for cid in case_ids:
         b = bundle[cid]
-        case = {
+        base_case = {
             "row": b["row"], "features": b["features"], "checks": b["checks"],
             "chart_summary": b["chart_summary"],
             "prompt_version": condition["prompt_version"],
@@ -180,16 +208,62 @@ def run_condition(condition: dict, df: pd.DataFrame, bundle: dict, experiment_id
             "baseline_anomaly": b["baseline_anomaly"], "baseline_severity": b["baseline_severity"],
             "temperature": float(condition.get("temperature", 0.0)), "model": condition["model"],
         }
-        agent_res = agent.run(case)
+
+        if architecture == "agentic_tools":
+            # mock_evidence drives the offline provider's decision simulation
+            # regardless of architecture; prompt_evidence (the single-shot-only
+            # pre-rendered block) is discarded here — the agentic agent never
+            # sees it, it retrieves evidence through tools instead.
+            _, mock_evidence = build_evidence(
+                row=b["row"], features=b["features"], checks=b["checks"],
+                chart_summary=b["chart_summary"],
+                include_deterministic_evidence=base_case["include_deterministic_evidence"],
+                baseline_anomaly=b["baseline_anomaly"], baseline_severity=b["baseline_severity"],
+                evidence_completeness=base_case["evidence_completeness"],
+            )
+            case = dict(base_case, mock_evidence=mock_evidence,
+                       mock_profile=PROMPT_PROFILES.get(condition["prompt_version"], {}))
+            agent_res = agentic_agent.run(case)
+        else:
+            agent_res = single_shot_agent.run(base_case)
+
         agent_res.extra["baseline_anomaly"] = b["baseline_anomaly"]
         review_res = None
         if reviewer is not None and agent_res.schema_valid:
+            prompt_evidence = agent_res.extra.get("prompt_evidence")
+            mock_evidence = agent_res.extra.get("mock_evidence")
+            if prompt_evidence is None:
+                # Agentic runs never render a prompt_evidence block (the primary
+                # agent retrieves evidence via tools instead) — build one here
+                # only for the reviewer's benefit; the primary agent still never
+                # sees it.
+                prompt_evidence, mock_evidence = build_evidence(
+                    row=b["row"], features=b["features"], checks=b["checks"],
+                    chart_summary=b["chart_summary"],
+                    include_deterministic_evidence=base_case["include_deterministic_evidence"],
+                    baseline_anomaly=b["baseline_anomaly"], baseline_severity=b["baseline_severity"],
+                    evidence_completeness=base_case["evidence_completeness"],
+                )
             review_res = reviewer.run(
-                case, agent_finding=agent_res.finding,
-                prompt_evidence=agent_res.extra["prompt_evidence"],
-                mock_evidence=agent_res.extra["mock_evidence"],
+                base_case, agent_finding=agent_res.finding,
+                prompt_evidence=prompt_evidence, mock_evidence=mock_evidence,
             )
-        records.append(_eval_record(b["row"], agent_res, review_res, condition, experiment_id))
+
+        validation_results = run_output_validation(
+            finding=agent_res.finding, schema_valid=agent_res.schema_valid,
+            validation_error=agent_res.validation_error, store=agent_res.extra.get("store"),
+            case_id=cid, review=(review_res.review if review_res and review_res.schema_valid else None),
+            tool_calls=agent_res.tool_calls, max_tool_calls=agent_res.extra.get("max_tool_calls", 0),
+        )
+        escalation = decide_escalation(
+            finding=agent_res.finding,
+            review=(review_res.review if review_res and review_res.schema_valid else None),
+            validation_results=validation_results, tool_calls=agent_res.tool_calls,
+            max_tool_calls=agent_res.extra.get("max_tool_calls", 0),
+        )
+
+        records.append(_eval_record(b["row"], agent_res, review_res, condition, experiment_id,
+                                    validation_results, escalation))
 
     pre = evaluate_records(records, decision_key="pred_anomaly", severity_key="pred_severity")
     baseline = classification_metrics([r["gt_anomaly"] for r in records],
@@ -217,7 +291,9 @@ def _summary_to_csv_row(summary: dict, grid_name: str, timestamp: str, seed: int
                 "balanced_accuracy", "severity_accuracy", "abstention_rate", "selective_accuracy",
                 "schema_compliance_rate", "unsupported_claim_rate", "expected_calibration_error",
                 "brier_score", "average_confidence", "avg_latency_s", "avg_estimated_cost",
-                "total_estimated_cost", "avg_retries"]:
+                "total_estimated_cost", "avg_retries", "avg_tool_calls", "evidence_citation_accuracy",
+                "deterministic_validation_pass_rate", "escalation_rate", "escalation_precision",
+                "escalation_recall"]:
         csv_row[f"pre_{key}"] = pre.get(key)
     csv_row["baseline_f1"] = summary["baseline"].get("f1")
     csv_row["baseline_precision"] = summary["baseline"].get("precision")
@@ -317,7 +393,7 @@ def _write_sample_outputs(jsonl_path) -> None:
     )
 
 
-def main(grids: Iterable[str] = ("mock_main", "mock_ablation")) -> None:
+def main(grids: Iterable[str] = ("mock_main", "mock_ablation", "mock_architecture_comparison")) -> None:
     run_experiments(list(grids))
 
 
