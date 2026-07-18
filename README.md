@@ -13,6 +13,28 @@ comparison between a **single-shot** architecture and an **agentic
 > They are not measurements of a production model or deployed business
 > system. See [§15](#15-mock-versus-live-disclosure).
 
+An analyst-facing review prototype that retrieves supporting evidence,
+produces a structured finding, validates it, and routes uncertain cases to
+human review.
+
+![Case Review workflow: metric history, evidence available to the agent, the agent's structured finding, deterministic baseline, run diagnostics, deterministic validation results, and the human-escalation decision for one case](screenshots/hero/case-review-hero-wide.png)
+
+**[View workflow](#6-architecture) · [View sample finding](#8-inputs-and-outputs) · [Run locally](#16-quick-start)**
+
+```
+Monitoring case → Evidence retrieval → Structured finding
+→ Reviewer → Deterministic validation → Human escalation
+```
+
+| | |
+|---|---|
+| **Who's it for** | Analysts or model reviewers evaluating monitoring anomalies |
+| **What goes in** | A synthetic case identity (single-shot: pre-supplied evidence; agentic: retrieved via tools) |
+| **What comes out** | A schema-validated finding citing specific evidence IDs |
+| **Where the LLM acts** | Drafting the finding and (in the agentic condition) deciding which evidence to retrieve |
+| **Where deterministic logic acts** | 7 independent validation checks + a rule-based baseline, none of them an LLM |
+| **When a human reviews** | Whenever an explicit escalation policy fires — severity, low confidence, unsupported claims, failed validation, and more (§12) |
+
 ## 1. Project overview
 
 This is a working prototype, not a production system: a synthetic
